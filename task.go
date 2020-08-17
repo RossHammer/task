@@ -54,8 +54,10 @@ type Executor struct {
 
 	taskvars *taskfile.Vars
 
-	taskCallCount map[string]*int32
-	mkdirMutexMap map[string]*sync.Mutex
+	taskCallCount  map[string]*int32
+	mkdirMutexMap  map[string]*sync.Mutex
+	execution      map[string]context.Context
+	executionMutex sync.Mutex
 }
 
 // Run runs Task
@@ -205,6 +207,10 @@ func (e *Executor) Setup() error {
 		}
 	}
 
+	if e.Taskfile.Run == "" {
+		e.Taskfile.Run = "always"
+	}
+
 	if v <= 2.1 {
 		err := errors.New(`task: Taskfile option "ignore_error" is only available starting on Taskfile version v2.1`)
 
@@ -236,6 +242,8 @@ func (e *Executor) Setup() error {
 		}
 	}
 
+	e.execution = make(map[string]context.Context)
+
 	e.taskCallCount = make(map[string]*int32, len(e.Taskfile.Tasks))
 	e.mkdirMutexMap = make(map[string]*sync.Mutex, len(e.Taskfile.Tasks))
 	for k := range e.Taskfile.Tasks {
@@ -253,6 +261,17 @@ func (e *Executor) RunTask(ctx context.Context, call taskfile.Call) error {
 	}
 	if !e.Watch && atomic.AddInt32(e.taskCallCount[call.Task], 1) >= MaximumTaskCall {
 		return &MaximumTaskCallExceededError{task: call.Task}
+	}
+
+	started, ctx, cancel, err := e.startExecution(ctx, t)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+
+	if !started {
+		<-ctx.Done()
+		return nil
 	}
 
 	if err := e.runDeps(ctx, t); err != nil {
@@ -398,4 +417,26 @@ func getEnviron(t *taskfile.Task) []string {
 		}
 	}
 	return environ
+}
+
+func (e *Executor) startExecution(innerCtx context.Context, t *taskfile.Task) (bool, context.Context, context.CancelFunc, error) {
+	h, err := e.GetHash(t)
+	if err != nil {
+		return true, nil, nil, err
+	}
+
+	if h == "" {
+		return true, innerCtx, func() {}, nil
+	}
+
+	e.executionMutex.Lock()
+	defer e.executionMutex.Unlock()
+	ctx, ok := e.execution[h]
+	if ok {
+		return false, ctx, func() {}, nil
+	}
+
+	ctx, cancel := context.WithCancel(innerCtx)
+	e.execution[h] = ctx
+	return true, ctx, cancel, nil
 }
