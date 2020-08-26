@@ -207,6 +207,9 @@ func (e *Executor) Setup() error {
 		}
 	}
 
+	if v < 3 && e.Taskfile.Run != "" {
+		return errors.New(`task: Setting the "run" type is only available starting on Taskfile version v3`)
+	}
 	if e.Taskfile.Run == "" {
 		e.Taskfile.Run = "always"
 	}
@@ -238,6 +241,11 @@ func (e *Executor) Setup() error {
 		for _, taskfile := range e.Taskfile.Includes {
 			if taskfile.AdvancedImport {
 				return errors.New(`task: Import with additional parameters is only available starting on Taskfile version v3`)
+			}
+		}
+		for _, task := range e.Taskfile.Tasks {
+			if task.Run != "" {
+				return errors.New(`task: Setting the "run" type is only available starting on Taskfile version v3`)
 			}
 		}
 	}
